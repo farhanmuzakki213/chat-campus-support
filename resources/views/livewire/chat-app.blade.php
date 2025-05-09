@@ -7,9 +7,20 @@
             :class="{ '-ml-64': !sidebarOpen, 'ml-0': sidebarOpen }">
 
             <!-- New Chat Button -->
-            <button wire:click="startNewSession"
-                class="mx-4 my-4 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors">
-                + New Chat
+            <button wire:click="startNewSession" wire:loading.attr="disabled"
+                class="mx-4 my-4 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors
+                        disabled:opacity-50 disabled:cursor-not-allowed">
+                <span wire:loading.remove>+ New Chat</span>
+                <span wire:loading>
+                    <svg class="animate-spin h-5 w-5 text-white mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none"
+                        viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                            stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                        </path>
+                    </svg>
+                </span>
             </button>
 
             <!-- Chat History -->
@@ -19,11 +30,9 @@
                     @foreach ($sessions as $session)
                         <li>
                             <button wire:click="loadSession('{{ $session->session_id }}')"
-                                class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 flex items-center justify-between"
-                                :class="{
-                                    'bg-gray-100': $wire.activeSession && $wire.activeSession - >
-                                        session_id === '{{ $session->session_id }}'
-                                }">
+                                class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 flex items-center justify-between
+                                        {{ $activeSession && $activeSession->session_id === $session->session_id ? 'bg-gray-100' : '' }}
+                                        @if ($loop->first) border-t border-gray-200 @endif">
                                 <span class="truncate">
                                     {{ $session->logs->first()->question ?? 'New Chat' }}
                                 </span>
@@ -94,7 +103,7 @@
             </header>
 
             <!-- Chat Messages -->
-            <main class="flex-1 overflow-y-auto bg-gray-50 p-4">
+            <main class="chat-messages flex-1 overflow-y-auto bg-gray-50 p-4">
                 <div class="max-w-3xl mx-auto space-y-6">
                     @if ($activeSession)
                         @foreach ($messages as $message)
@@ -155,28 +164,54 @@
                 </div>
             </main>
 
-            <!-- Input Area -->
-            @if ($activeSession)
-                <div class="border-t border-gray-200 bg-white p-4">
-                    <form wire:submit.prevent="sendMessage" class="max-w-3xl mx-auto relative">
-                        <div class="relative">
-                            <input wire:model="newMessage" type="text" placeholder="Message CampusBot..."
-                                class="w-full pr-12 pl-4 py-3 border border-gray-300 rounded-xl focus:border-purple-500 focus:ring-purple-500 text-sm">
+            <div class="border-t border-gray-200 bg-white p-4">
+                <form wire:submit.prevent="sendMessage" class="max-w-3xl mx-auto relative">
+                    <div class="relative">
+                        <input wire:model="newMessage" type="text" placeholder="Message CampusBot..."
+                            class="w-full pr-12 pl-4 py-3 border border-gray-300 rounded-xl focus:border-purple-500 focus:ring-purple-500 text-sm">
 
-                            <button type="submit"
-                                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-purple-600">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                                </svg>
-                            </button>
-                        </div>
-                        <div class="mt-2 text-center text-xs text-gray-500">
-                            Example: "When is the academic calendar for 2024?"
-                        </div>
-                    </form>
-                </div>
-            @endif
+                        <button type="submit"
+                            class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-purple-600">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="mt-2 text-center text-xs text-gray-500">
+                        Example: "When is the academic calendar for 2024?"
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
+    @push('scripts')
+        <script>
+            document.addEventListener('livewire:load', function() {
+                Livewire.on('scroll-to-bottom', () => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                });
+
+                Livewire.on('show-error', (message) => {
+                    alert(message);
+                });
+            });
+            document.addEventListener('livewire:init', () => {
+                Livewire.on('new-session-created', () => {
+                    // Force refresh component
+                    Livewire.findComponentByName('chat-app').$refresh();
+                });
+            });
+        </script>
+    @endpush
+
+    @push('styles')
+        <style>
+            .chat-messages {
+                scroll-behavior: smooth;
+                transition: scroll-top 0.3s ease-in-out;
+            }
+        </style>
+    @endpush
+
 @endsection

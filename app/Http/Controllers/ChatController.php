@@ -2,58 +2,99 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\ChatLog;
 use Illuminate\Http\Request;
+use App\Models\ChatLog;
+use App\Models\ChatSession;
 use App\Services\KnowledgeBaseService;
+use App\Services\GeminiService;
+use Illuminate\Support\Facades\Validator;
 
 class ChatController extends Controller
 {
-    protected $knowledgeBaseService;
+    protected $knowledgeService;
+    protected $geminiService;
 
-    public function __construct(KnowledgeBaseService $knowledgeBaseService)
-    {
-        $this->knowledgeBaseService = $knowledgeBaseService;
+    public function __construct(
+        KnowledgeBaseService $knowledgeService,
+        GeminiService $geminiService
+    ) {
+        $this->knowledgeService = $knowledgeService;
+        $this->geminiService = $geminiService;
     }
 
-    public function processQuestion($logId)
+    public function searchKnowledgeBase(Request $request)
     {
-        $log = ChatLog::findOrFail($logId);
+        $validator = Validator::make($request->all(), [
+            'question' => 'required|string',
+            'session_id' => 'required|string'
+        ]);
 
-        // Cari di knowledge base (MongoDB)
-        $knowledgeResult = $this->knowledgeBaseService->search($log->question);
-
-        if ($knowledgeResult) {
-            // Jika ditemukan di knowledge base
-            $log->update([
-                'answer' => $knowledgeResult['answer'],
-                'source' => 'knowledge_base',
-                'knowledge_id' => $knowledgeResult['id']
-            ]);
-
-            // Kirim lampiran jika ada
-            $attachments = $knowledgeResult['attachments'] ?? [];
-        } else {
-            // Jika tidak ditemukan, generate jawaban AI
-            $aiResponse = $this->generateAIResponse($log->question);
-
-            $log->update([
-                'answer' => $aiResponse,
-                'source' => 'ai_generated'
-            ]);
-
-            $attachments = [];
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'errors' => $validator->errors()
+            ], 422);
         }
 
-        return response()->json([
-            'status' => 'success',
-            'log' => $log,
-            'attachments' => $attachments
-        ]);
+        try {
+            $result = $this->knowledgeService->search($request->question);
+
+            if ($result && $result['score'] > 40) { // Threshold 40%
+                $source = $result['type'] === 'faq' ? 'knowledge_base' : 'knowledge_base';
+                $answer = $result['type'] === 'faq'
+                    ? $result['data']['answer']
+                    : $result['data']['content'];
+
+                $log = $this->createChatLog(
+                    $request->session_id,
+                    $request->question,
+                    $answer,
+                    $source,
+                    (string)$result['data']['_id']['$oid'],
+                    $result['type'] === 'knowledge' ? $result['data']['attachments'] : []
+                );
+
+                return response()->json([
+                    'status' => 'success',
+                    'type' => $source,
+                    'log' => $log,
+                    'attachments' => $log->attachments
+                ]);
+            }
+
+            // Jika tidak memenuhi threshold
+            $aiResponse = $this->geminiService->generateResponse($request->question);
+
+            $log = $this->createChatLog(
+                $request->session_id,
+                $request->question,
+                $aiResponse,
+                'ai_generated'
+            );
+
+            return response()->json([
+                'status' => 'success',
+                'type' => 'ai_generated',
+                'log' => $log
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Error processing request: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
-    protected function generateAIResponse($question)
+    private function createChatLog($sessionId, $question, $answer, $source, $knowledgeId = null, $attachments = [])
     {
-        // Ini akan diimplementasikan dengan lebih baik nanti
-        return "Saya sedang mempelajari pertanyaan Anda: \"$question\". Untuk sementara, Anda bisa mengecek informasi terkait di situs resmi kampus atau menghubungi bagian administrasi.";
+        return ChatLog::create([
+            'session_id' => $sessionId,
+            'user_id' => auth()->id(),
+            'question' => $question,
+            'answer' => $answer,
+            'source' => $source,
+            'knowledge_id' => $knowledgeId,
+            'attachments' => $attachments
+        ]);
     }
 }

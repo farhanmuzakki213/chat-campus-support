@@ -15,7 +15,7 @@ class ChatSession extends Model
     protected $keyType = 'string';
 
     protected $fillable = [
-        'user_id', 'started_at', 'ended_at'
+        'session_id, user_id', 'started_at', 'ended_at'
     ];
 
     public function user(): BelongsTo

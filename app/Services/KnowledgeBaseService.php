@@ -2,73 +2,71 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Log;
-use MongoDB\Client as MongoClient;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 
 class KnowledgeBaseService
 {
-    protected $mongoClient;
-    protected $knowledgeBase;
-    protected $faqs;
-
-    public function __construct()
+    public function search(string $query)
     {
         try {
-            $this->mongoClient = new MongoClient(env('MONGODB_URI'));
-            $db = $this->mongoClient->selectDatabase(env('MONGODB_DATABASE'));
-            $this->knowledgeBase = $db->selectCollection('knowledge_base');
-            $this->faqs = $db->selectCollection('faqs');
+            // Ambil semua data dari API
+            $faqs = Http::withToken(auth()->user()->currentAccessToken()->token)
+                ->get(route('api.faqs'))
+                ->json();
+
+            $knowledge = Http::withToken(auth()->user()->currentAccessToken()->token)
+                ->get(route('api.knowledge-base'))
+                ->json();
+
+            // Cari yang paling relevan
+            return $this->findBestMatch($query, $faqs, $knowledge);
+
         } catch (\Exception $e) {
-            Log::error('MongoDB connection error: ' . $e->getMessage());
+            logger()->error('Search error: ' . $e->getMessage());
+            return null;
         }
     }
 
-    public function search(string $query)
+    private function findBestMatch($query, $faqs, $knowledge)
     {
-        if (!$this->knowledgeBase) {
-            return null;
-        }
+        $allResults = collect()
+            ->merge($this->processFaqs($query, $faqs))
+            ->merge($this->processKnowledge($query, $knowledge));
 
-        // Cari di FAQs terlebih dahulu
-        $faqResult = $this->faqs->findOne([
-            '$text' => ['$search' => $query]
-        ], [
-            'score' => ['$meta' => 'textScore'],
-            'sort' => ['score' => ['$meta' => 'textScore']]
-        ]);
+        return $allResults->sortByDesc('score')->first();
+    }
 
-        if ($faqResult) {
+    private function processFaqs($query, $faqs)
+    {
+        return collect($faqs)->map(function ($faq) use ($query) {
             return [
-                'id' => (string)$faqResult['_id'],
-                'answer' => $faqResult['answer'],
-                'attachments' => []
+                'type' => 'faq',
+                'score' => $this->calculateScore($query, $faq['question'] . ' ' . $faq['answer']),
+                'data' => $faq
             ];
-        }
+        });
+    }
 
-        // Cari di knowledge base
-        $kbResult = $this->knowledgeBase->findOne([
-            '$text' => ['$search' => $query]
-        ], [
-            'score' => ['$meta' => 'textScore'],
-            'sort' => ['score' => ['$meta' => 'textScore']]
-        ]);
-
-        if ($kbResult) {
-            $attachments = isset($kbResult['attachments']) ? array_map(function($attachment) {
-                return [
-                    'name' => $attachment['name'],
-                    'url' => $attachment['url'],
-                    'type' => $attachment['type']
-                ];
-            }, $kbResult['attachments']) : [];
-
+    private function processKnowledge($query, $knowledge)
+    {
+        return collect($knowledge)->map(function ($doc) use ($query) {
             return [
-                'id' => (string)$kbResult['_id'],
-                'answer' => $kbResult['content'],
-                'attachments' => $attachments
+                'type' => 'knowledge',
+                'score' => $this->calculateScore($query, $doc['title'] . ' ' . $doc['content']),
+                'data' => $doc
             ];
-        }
+        });
+    }
 
-        return null;
+    private function calculateScore($query, $text)
+    {
+        $queryWords = explode(' ', Str::lower($query));
+        $textWords = explode(' ', Str::lower($text));
+
+        $matchCount = count(array_intersect($queryWords, $textWords));
+        $totalWords = count($queryWords);
+
+        return $totalWords > 0 ? ($matchCount / $totalWords) * 100 : 0;
     }
 }

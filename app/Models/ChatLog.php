@@ -12,7 +12,18 @@ class ChatLog extends Model
     protected $primaryKey = 'log_id';
 
     protected $fillable = [
-        'session_id', 'user_id', 'question', 'answer', 'source', 'knowledge_id'
+        'session_id',
+        'user_id',
+        'question',
+        'answer',
+        'source',
+        'knowledge_id'
+    ];
+
+    protected $casts = [
+        'attachments' => 'array',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime'
     ];
 
     public function session(): BelongsTo
