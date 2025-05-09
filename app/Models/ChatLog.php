@@ -17,7 +17,9 @@ class ChatLog extends Model
         'question',
         'answer',
         'source',
-        'knowledge_id'
+        'knowledge_id',
+        'created_at',
+        'updated_at'
     ];
 
     protected $casts = [

@@ -1,4 +1,6 @@
 import './bootstrap';
+import 'alpinejs'
+
 
 window.addEventListener('DOMContentLoaded', () => {
     Livewire.on('processQuestion', (logId) => {
@@ -17,25 +19,4 @@ window.addEventListener('DOMContentLoaded', () => {
             });
     });
 });
-// Tambahkan di bagian paling atas
-document.addEventListener('livewire:init', () => {
-    Livewire.on('newMessageSent', () => {
-        console.log('Livewire event received!');
-    });
 
-    Livewire.on('error', (message) => {
-        console.error('Livewire error:', message);
-    });
-});
-
-// Tambahkan listener untuk tombol
-document.querySelector('[wire\\:click="startNewSession"]').addEventListener('click', function(e) {
-    console.log('Tombol diklik!');
-});
-
-window.addEventListener('DOMContentLoaded', () => {
-    Livewire.on('new-message', () => {
-        const chatContainer = document.querySelector('.chat-messages');
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-    });
-});

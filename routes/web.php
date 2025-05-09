@@ -25,9 +25,6 @@ use Illuminate\Support\Facades\Route;
 
 Route::middleware(['auth'])->group(function () {
     Route::get('/chat', ChatApp::class)->name('chat');
-
-    Route::post('/chat/process/{logId}', [ChatController::class, 'processQuestion'])
-        ->name('chat.process');
 });
 
 Route::get('/', Login::class)->name('login');

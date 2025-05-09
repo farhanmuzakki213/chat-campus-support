@@ -8,10 +8,12 @@ use App\Models\ChatSession;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 class ChatApp extends Component
 {
-    public $activeSession = null;
+    public string|null $activeSessionId = null;
     public $sessions = [];
     public $messages = [];
     public $newMessage = '';
@@ -23,64 +25,138 @@ class ChatApp extends Component
         $this->refreshChatList();
     }
 
+    public function getActiveSessionProperty()
+    {
+        if (!$this->activeSessionId) return null;
+
+        return ChatSession::with('logs')
+            ->where('user_id', Auth::id())
+            ->where('session_id', $this->activeSessionId)
+            ->first();
+    }
+
     public function sendMessage()
     {
-        $this->validate(['newMessage' => 'required|string|max:1000']);
+        if (!$this->activeSession) {
+            $this->addError('error', 'Tidak ada sesi aktif. Silakan mulai sesi baru.');
+            return;
+        }
+
         try {
-            // Simpan pertanyaan pengguna
+            DB::beginTransaction();
+
+            // 1. Simpan pertanyaan user
             $log = ChatLog::create([
                 'session_id' => $this->activeSession->session_id,
                 'user_id' => auth()->id(),
                 'question' => $this->newMessage,
-                'source' => 'pending'
+                'source' => 'pending',
             ]);
 
-            // Panggil API
-            $response = Http::withToken(auth()->user()->currentAccessToken()->token)
-                ->post(route('api.chat.search'), [
-                    'question' => $this->newMessage,
-                    'session_id' => $this->activeSession->session_id
-                ]);
+            // Siapkan variabel jawaban
+            $answer = null;
+            $source = 'knowledge_base';
+            $attachments = [];
 
-            if ($response->successful()) {
-                $this->messages->push($response->json()['log']);
-                $this->dispatchBrowserEvent('new-message');
-            } else {
-                $this->addError('error', 'Gagal memproses pertanyaan');
+            // 2. Kirim ke API lokal
+            $local = Http::post('https://1507-103-190-46-86.ngrok-free.app/ask', [
+                'question' => $this->newMessage,
+            ]);
+
+            if ($local->ok() && isset($local['answer'])) {
+                $answerLokal = strtolower($local['answer']);
+                $unknown = collect(['maaf', 'belum menemukan', 'tidak tahu', 'tidak memiliki']);
+
+                $isUnknown = $unknown->contains(fn($word) => str_contains($answerLokal, $word));
+
+                if (!$isUnknown) {
+                    $answer = $local['answer'];
+                    $source = $local['source'] ?? 'knowledge_base';
+                    $attachments = $local['attachments'] ?? [];
+                }
             }
 
+            // 3. Fallback ke Gemini jika lokal tidak memadai
+            if (empty($answer)) {
+                $gemini = $this->askGemini($this->newMessage);
+
+                if ($gemini) {
+                    $answer = $gemini;
+                    $source = 'gemini';
+                } else {
+                    $answer = 'Maaf, server sedang sibuk. Silakan coba lagi nanti.';
+                    $source = 'fallback';
+                }
+            }
+            // dd($answer, $source, $attachments);
+            // 4. Update log dengan jawaban
+            // dd($log);
+            $log->update([
+                'answer' => $answer,
+                'source' => $source,
+            ]);
+
+            // 5. Kirim ke user
+            $this->messages[] = (object) [
+                'id' => $log->id,
+                'user_id' => $log->user_id,
+                'question' => $log->question,
+                'answer' => (string) $log->answer,
+                'source' => (string) $log->source,
+                'created_at' => now()->toDateTimeString(),
+                'attachments' => $attachments ?? [],
+                ];
+
+            // Reset input
+            $this->dispatch('scroll-to-bottom');
             $this->newMessage = '';
+            DB::commit();
         } catch (\Exception $e) {
-            $this->addError('error', 'Error: ' . $e->getMessage());
+            DB::rollBack();
+            $this->addError('error', 'Gagal mengirim pesan: ' . $e->getMessage());
         }
     }
+
+    // Panggil Gemini API publik (gratisan)
+    protected function askGemini(string $question): ?string
+    {
+        try {
+            $response = Http::withHeaders([
+                'Content-Type' => 'application/json',
+            ])->post('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=API_KEY_KAMU', [
+                'contents' => [[
+                    'parts' => [['text' => $question]]
+                ]]
+            ]);
+            return $response['candidates'][0]['content']['parts'][0]['text'] ?? null;
+        } catch (\Exception $e) {
+            logger('Gemini error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
 
     public function startNewSession()
     {
         try {
-            // Create new session
             $newSession = ChatSession::create([
                 'session_id' => Str::uuid(),
                 'user_id' => Auth::id(),
-                'started_at' => now()
+                'started_at' => now(),
             ]);
-
-            // Reset active session and messages
-            $this->activeSession = $newSession;
+            // dd("test");
+            $this->activeSessionId = $newSession->session_id;
             $this->messages = [];
 
-            // Refresh session list
             $this->refreshChatList();
 
-            // Scroll to bottom
-            $this->dispatchBrowserEvent('new-session-created');
-            $this->dispatchBrowserEvent('scroll-to-bottom');
+            $this->dispatch('new-session-created');
+            $this->dispatch('scroll-to-bottom');
         } catch (\Exception $e) {
-            $this->dispatchBrowserEvent('show-error', [
-                'message' => 'Gagal membuat sesi baru: ' . $e->getMessage()
-            ]);
+            $this->dispatch('show-error', 'Gagal membuat sesi baru: ' . $e->getMessage());
         }
     }
+
 
     private function refreshChatList()
     {
@@ -92,13 +168,24 @@ class ChatApp extends Component
 
     public function loadSession($sessionId)
     {
-        $this->activeSession = ChatSession::with('logs')
-            ->findOrFail($sessionId);
-        $this->messages = $this->activeSession->logs;
+        $this->activeSessionId = $sessionId;
+        $this->messages = ChatLog::where('session_id', $sessionId)
+            ->orderBy('created_at')
+            ->get()
+            ->map(fn($log) => (object) [
+                'id' => $log->id,
+                'user_id' => $log->user_id,
+                'question' => $log->question,
+                'answer' => $log->answer,
+                'source' => $log->source,
+                'created_at' => $log->created_at->toDateTimeString(),
+                'attachments' => $log->attachments ?? [],
+            ])
+            ->toArray();
     }
 
     public function render()
     {
-        return view('livewire.chat-app')->extends('layouts.app');
+        return view('livewire.chat-app')->layout('layouts.app');
     }
 }
